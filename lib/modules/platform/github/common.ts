@@ -1,9 +1,9 @@
 import is from '@sindresorhus/is';
-import { PrState } from '../../../types';
-import * as schema from '../../../util/schema';
+import { GithubHttp } from '../../../util/http/github';
 import { getPrBodyStruct } from '../pr-body';
-import * as platformSchemas from '../schemas';
 import type { GhPr, GhRestPr } from './types';
+
+export const githubApi = new GithubHttp();
 
 /**
  * @see https://docs.github.com/en/rest/reference/pulls#list-pull-requests
@@ -11,14 +11,11 @@ import type { GhPr, GhRestPr } from './types';
 export function coerceRestPr(pr: GhRestPr): GhPr {
   const bodyStruct = pr.bodyStruct ?? getPrBodyStruct(pr.body);
   const result: GhPr = {
-    displayNumber: `Pull Request #${pr.number}`,
     number: pr.number,
     sourceBranch: pr.head?.ref,
     title: pr.title,
     state:
-      pr.state === PrState.Closed && is.string(pr.merged_at)
-        ? PrState.Merged
-        : pr.state,
+      pr.state === 'closed' && is.string(pr.merged_at) ? 'merged' : pr.state,
     bodyStruct,
     updated_at: pr.updated_at,
     node_id: pr.node_id,
@@ -36,12 +33,14 @@ export function coerceRestPr(pr: GhRestPr): GhPr {
     result.labels = pr.labels.map(({ name }) => name);
   }
 
-  if (pr.assignee || is.nonEmptyArray(pr.assignees)) {
+  if (!!pr.assignee || is.nonEmptyArray(pr.assignees)) {
     result.hasAssignees = true;
   }
 
   if (pr.requested_reviewers) {
-    result.hasReviewers = true;
+    result.reviewers = pr.requested_reviewers
+      .map(({ login }) => login)
+      .filter(is.nonEmptyString);
   }
 
   if (pr.created_at) {
@@ -52,6 +51,9 @@ export function coerceRestPr(pr: GhRestPr): GhPr {
     result.closedAt = pr.closed_at;
   }
 
-  schema.match(platformSchemas.Pr, result, 'warn');
+  if (pr.base?.ref) {
+    result.targetBranch = pr.base.ref;
+  }
+
   return result;
 }

@@ -1,60 +1,52 @@
-import {
-  CodeCommitClient,
-  CreatePullRequestApprovalRuleCommand,
+import type {
   CreatePullRequestApprovalRuleInput,
   CreatePullRequestApprovalRuleOutput,
-  CreatePullRequestCommand,
   CreatePullRequestInput,
   CreatePullRequestOutput,
-  DeleteCommentContentCommand,
   DeleteCommentContentInput,
   DeleteCommentContentOutput,
-  DescribePullRequestEventsCommand,
-  DescribePullRequestEventsInput,
-  DescribePullRequestEventsOutput,
-  GetCommentsForPullRequestCommand,
   GetCommentsForPullRequestInput,
   GetCommentsForPullRequestOutput,
-  GetFileCommand,
   GetFileInput,
   GetFileOutput,
-  GetPullRequestCommand,
   GetPullRequestInput,
   GetPullRequestOutput,
-  GetRepositoryCommand,
   GetRepositoryInput,
   GetRepositoryOutput,
-  ListPullRequestsCommand,
   ListPullRequestsInput,
   ListPullRequestsOutput,
-  ListRepositoriesCommand,
   ListRepositoriesInput,
   ListRepositoriesOutput,
-  // MergeBranchesByFastForwardCommand,
-  // MergeBranchesByFastForwardInput,
-  // MergeBranchesByFastForwardOutput,
-  // MergeBranchesBySquashCommand,
-  // MergeBranchesBySquashInput,
-  // MergeBranchesBySquashOutput,
-  PostCommentForPullRequestCommand,
   PostCommentForPullRequestInput,
   PostCommentForPullRequestOutput,
-  PullRequestEventType,
-  PullRequestStatusEnum,
-  UpdateCommentCommand,
   UpdateCommentInput,
   UpdateCommentOutput,
-  UpdatePullRequestDescriptionCommand,
   UpdatePullRequestDescriptionInput,
   UpdatePullRequestDescriptionOutput,
-  UpdatePullRequestStatusCommand,
   UpdatePullRequestStatusInput,
   UpdatePullRequestStatusOutput,
-  UpdatePullRequestTitleCommand,
   UpdatePullRequestTitleInput,
   UpdatePullRequestTitleOutput,
 } from '@aws-sdk/client-codecommit';
-import type { Credentials } from '@aws-sdk/types';
+import {
+  CodeCommitClient,
+  CreatePullRequestApprovalRuleCommand,
+  CreatePullRequestCommand,
+  DeleteCommentContentCommand,
+  GetCommentsForPullRequestCommand,
+  GetFileCommand,
+  GetPullRequestCommand,
+  GetRepositoryCommand,
+  ListPullRequestsCommand,
+  ListRepositoriesCommand,
+  PostCommentForPullRequestCommand,
+  PullRequestStatusEnum,
+  UpdateCommentCommand,
+  UpdatePullRequestDescriptionCommand,
+  UpdatePullRequestStatusCommand,
+  UpdatePullRequestTitleCommand,
+} from '@aws-sdk/client-codecommit';
+import type { RepositoryMetadata } from '@aws-sdk/client-codecommit/dist-types/models/models_0';
 import is from '@sindresorhus/is';
 import * as aws4 from 'aws4';
 import { REPOSITORY_UNINITIATED } from '../../../constants/error-messages';
@@ -62,15 +54,9 @@ import { logger } from '../../../logger';
 
 let codeCommitClient: CodeCommitClient;
 
-export function buildCodeCommitClient(
-  region: string,
-  credentials: Credentials
-): void {
+export function buildCodeCommitClient(): void {
   if (!codeCommitClient) {
-    codeCommitClient = new CodeCommitClient({
-      region,
-      credentials,
-    });
+    codeCommitClient = new CodeCommitClient({});
   }
 
   // istanbul ignore if
@@ -80,7 +66,7 @@ export function buildCodeCommitClient(
 }
 
 export async function deleteComment(
-  commentId: string
+  commentId: string,
 ): Promise<DeleteCommentContentOutput> {
   const input: DeleteCommentContentInput = {
     commentId,
@@ -90,11 +76,9 @@ export async function deleteComment(
 }
 
 export async function getPrComments(
-  repositoryName: string,
-  pullRequestId: string
+  pullRequestId: string,
 ): Promise<GetCommentsForPullRequestOutput> {
   const input: GetCommentsForPullRequestInput = {
-    repositoryName,
     pullRequestId,
   };
   const cmd = new GetCommentsForPullRequestCommand(input);
@@ -103,7 +87,7 @@ export async function getPrComments(
 
 export async function updateComment(
   commentId: string,
-  content: string
+  content: string,
 ): Promise<UpdateCommentOutput> {
   const input: UpdateCommentInput = {
     commentId,
@@ -118,7 +102,7 @@ export async function createPrComment(
   repositoryName: string | undefined,
   content: string,
   beforeCommitId: string,
-  afterCommitId: string
+  afterCommitId: string,
 ): Promise<PostCommentForPullRequestOutput> {
   const input: PostCommentForPullRequestInput = {
     pullRequestId,
@@ -128,18 +112,6 @@ export async function createPrComment(
     beforeCommitId,
   };
   const cmd = new PostCommentForPullRequestCommand(input);
-  return await codeCommitClient.send(cmd);
-}
-
-export async function getPrEvents(
-  pullRequestId: string
-): Promise<DescribePullRequestEventsOutput> {
-  const input: DescribePullRequestEventsInput = {
-    pullRequestId,
-    pullRequestEventType:
-      PullRequestEventType.PULL_REQUEST_SOURCE_REFERENCE_UPDATED,
-  };
-  const cmd = new DescribePullRequestEventsCommand(input);
   return await codeCommitClient.send(cmd);
 }
 
@@ -177,7 +149,7 @@ export async function getPrEvents(
 
 export async function updatePrStatus(
   pullRequestId: string,
-  pullRequestStatus: PullRequestStatusEnum.CLOSED | PullRequestStatusEnum.OPEN
+  pullRequestStatus: PullRequestStatusEnum,
 ): Promise<UpdatePullRequestStatusOutput> {
   const input: UpdatePullRequestStatusInput = {
     pullRequestId,
@@ -189,7 +161,7 @@ export async function updatePrStatus(
 
 export async function updatePrTitle(
   prNo: string,
-  title: string
+  title: string,
 ): Promise<UpdatePullRequestTitleOutput> {
   const input: UpdatePullRequestTitleInput = {
     pullRequestId: `${prNo}`,
@@ -201,7 +173,7 @@ export async function updatePrTitle(
 
 export async function updatePrDescription(
   pullRequestId: string,
-  description: string
+  description: string,
 ): Promise<UpdatePullRequestDescriptionOutput> {
   const input: UpdatePullRequestDescriptionInput = {
     pullRequestId,
@@ -216,7 +188,7 @@ export async function createPr(
   description: string,
   sourceReference: string,
   destinationReference: string,
-  repositoryName: string | undefined
+  repositoryName: string | undefined,
 ): Promise<CreatePullRequestOutput> {
   const input: CreatePullRequestInput = {
     title,
@@ -236,7 +208,7 @@ export async function createPr(
 export async function getFile(
   repositoryName: string | undefined,
   filePath: string,
-  commitSpecifier: string | undefined
+  commitSpecifier: string | undefined,
 ): Promise<GetFileOutput> {
   const input: GetFileInput = {
     repositoryName,
@@ -249,19 +221,18 @@ export async function getFile(
 
 export async function listPullRequests(
   repositoryName: string,
-  authorArn: string
 ): Promise<ListPullRequestsOutput> {
   const input: ListPullRequestsInput = {
     repositoryName,
-    authorArn,
     pullRequestStatus: PullRequestStatusEnum.OPEN,
   };
+
   const cmd = new ListPullRequestsCommand(input);
   return await codeCommitClient.send(cmd);
 }
 
 export async function getRepositoryInfo(
-  repository: string
+  repository: string,
 ): Promise<GetRepositoryOutput> {
   const input: GetRepositoryInput = {
     repositoryName: `${repository}`,
@@ -271,7 +242,7 @@ export async function getRepositoryInfo(
 }
 
 export async function getPr(
-  pullRequestId: string
+  pullRequestId: string,
 ): Promise<GetPullRequestOutput | undefined> {
   const input: GetPullRequestInput = {
     pullRequestId,
@@ -294,7 +265,7 @@ export async function listRepositories(): Promise<ListRepositoriesOutput> {
 
 export async function createPrApprovalRule(
   pullRequestId: string,
-  approvalRuleContent: string
+  approvalRuleContent: string,
 ): Promise<CreatePullRequestApprovalRuleOutput> {
   const input: CreatePullRequestApprovalRuleInput = {
     approvalRuleContent,
@@ -306,19 +277,28 @@ export async function createPrApprovalRule(
 }
 
 export function getCodeCommitUrl(
-  region: string,
+  repoMetadata: RepositoryMetadata,
   repoName: string,
-  credentials: Credentials
 ): string {
-  const signer = new aws4.RequestSigner(
-    {
-      service: 'codecommit',
-      host: `git-codecommit.${region}.amazonaws.com`,
-      method: 'GIT',
-      path: `v1/repos/${repoName}`,
-    },
-    credentials
-  );
+  logger.debug('get code commit url');
+  if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+    if (repoMetadata.cloneUrlHttp) {
+      return repoMetadata.cloneUrlHttp;
+    }
+    // shouldn't reach here, but just in case
+    return `https://git-codecommit.${
+      process.env.AWS_REGION ?? 'us-east-1'
+    }.amazonaws.com/v1/repos/${repoName}`;
+  }
+
+  const signer = new aws4.RequestSigner({
+    service: 'codecommit',
+    host: `git-codecommit.${
+      process.env.AWS_REGION ?? 'us-east-1'
+    }.amazonaws.com`,
+    method: 'GIT',
+    path: `v1/repos/${repoName}`,
+  });
   const dateTime = signer.getDateTime();
 
   /* istanbul ignore if */
@@ -326,11 +306,10 @@ export function getCodeCommitUrl(
     throw new Error(REPOSITORY_UNINITIATED);
   }
 
-  const accessKeyId = credentials.accessKeyId;
   const token = `${dateTime}Z${signer.signature()}`;
 
-  let username = `${accessKeyId}${
-    credentials.sessionToken ? `%${credentials.sessionToken}` : ''
+  let username = `${process.env.AWS_ACCESS_KEY_ID}${
+    process.env.AWS_SESSION_TOKEN ? `%${process.env.AWS_SESSION_TOKEN}` : ''
   }`;
 
   // massaging username with the session token,
@@ -338,5 +317,7 @@ export function getCodeCommitUrl(
   if (username.includes('/')) {
     username = username.replace(/\//g, '%2F');
   }
-  return `https://${username}:${token}@git-codecommit.${region}.amazonaws.com/v1/repos/${repoName}`;
+  return `https://${username}:${token}@git-codecommit.${
+    process.env.AWS_REGION ?? 'us-east-1'
+  }.amazonaws.com/v1/repos/${repoName}`;
 }

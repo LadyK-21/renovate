@@ -1,11 +1,11 @@
 import pThrottle from 'p-throttle';
 import { logger } from '../../logger';
 import { parseUrl } from '../url';
-import { getThrottleIntervalMs } from './host-rules';
+import { getThrottleIntervalMs } from './rate-limits';
 
 const hostThrottles = new Map<string, Throttle | null>();
 
-class Throttle {
+export class Throttle {
   private throttle: ReturnType<typeof pThrottle>;
 
   constructor(interval: number) {
@@ -26,18 +26,17 @@ export function getThrottle(url: string): Throttle | null {
   const host = parseUrl(url)?.host;
   if (!host) {
     // should never happen
-    logger.debug({ url }, 'No host');
+    logger.debug(`No host on ${url}`);
     return null;
   }
 
   let throttle = hostThrottles.get(host);
   if (throttle === undefined) {
     throttle = null; // null represents "no throttle", as opposed to undefined
-    const throttleOptions = getThrottleIntervalMs(url);
-    if (throttleOptions) {
-      const intervalMs = throttleOptions;
-      logger.debug({ intervalMs, host }, 'Using throttle');
-      throttle = new Throttle(intervalMs);
+    const throttleMs = getThrottleIntervalMs(url);
+    if (throttleMs) {
+      logger.debug(`Using throttle ${throttleMs} intervalMs for host ${host}`);
+      throttle = new Throttle(throttleMs);
     } else {
       logger.trace({ host }, 'No throttle');
     }
