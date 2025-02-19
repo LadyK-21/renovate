@@ -1,15 +1,14 @@
-import { PlatformId } from '../../../constants';
 import type * as _hostRules from '../../../util/host-rules';
 
 describe('modules/platform/azure/azure-got-wrapper', () => {
   let azure: typeof import('./azure-got-wrapper');
   let hostRules: typeof _hostRules;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // reset module
     jest.resetModules();
-    hostRules = require('../../../util/host-rules');
-    azure = require('./azure-got-wrapper');
+    hostRules = await import('../../../util/host-rules');
+    azure = await import('./azure-got-wrapper');
   });
 
   describe('gitApi', () => {
@@ -21,7 +20,7 @@ describe('modules/platform/azure/azure-got-wrapper', () => {
 
     it('should set personal access token and endpoint', () => {
       hostRules.add({
-        hostType: PlatformId.Azure,
+        hostType: 'azure',
         token: '123test',
         matchHost: 'https://dev.azure.com/renovate1',
       });
@@ -42,7 +41,7 @@ describe('modules/platform/azure/azure-got-wrapper', () => {
 
     it('should set bearer token and endpoint', () => {
       hostRules.add({
-        hostType: PlatformId.Azure,
+        hostType: 'azure',
         token: 'testtoken',
         matchHost: 'https://dev.azure.com/renovate2',
       });
@@ -63,7 +62,7 @@ describe('modules/platform/azure/azure-got-wrapper', () => {
 
     it('should set password and endpoint', () => {
       hostRules.add({
-        hostType: PlatformId.Azure,
+        hostType: 'azure',
         username: 'user',
         password: 'pass',
         matchHost: 'https://dev.azure.com/renovate3',

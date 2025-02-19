@@ -1,10 +1,11 @@
-import { ProgrammingLanguage } from '../../../constants';
+import type { Category } from '../../../constants';
 import { DockerDatasource } from '../../datasource/docker';
 import { KubernetesApiDatasource } from '../../datasource/kubernetes-api';
 
 export { extractPackageFile } from './extract';
 
-export const language = ProgrammingLanguage.Docker;
+export const url = 'https://kubernetes.io/docs';
+export const categories: Category[] = ['kubernetes'];
 
 export const defaultConfig = {
   fileMatch: [],

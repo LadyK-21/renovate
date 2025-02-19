@@ -1,8 +1,5 @@
-import { afterAll } from '@jest/globals';
 import { ProxyTracerProvider } from '@opentelemetry/api';
 import * as api from '@opentelemetry/api';
-import { NoopTracerProvider } from '@opentelemetry/api/build/src/trace/NoopTracerProvider';
-import { MultiSpanProcessor } from '@opentelemetry/sdk-trace-base/build/src/MultiSpanProcessor';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import {
   disableInstrumentations,
@@ -17,7 +14,6 @@ describe('instrumentation/index', () => {
   const oldEnv = process.env;
 
   beforeEach(() => {
-    jest.clearAllMocks();
     api.trace.disable(); // clear global components
     process.env = { ...oldEnv };
   });
@@ -31,7 +27,7 @@ describe('instrumentation/index', () => {
     const traceProvider = getTracerProvider();
     expect(traceProvider).toBeInstanceOf(ProxyTracerProvider);
     const provider = traceProvider as ProxyTracerProvider;
-    expect(provider.getDelegate()).toBeInstanceOf(NoopTracerProvider);
+    expect(provider.constructor.name).toBe('ProxyTracerProvider');
   });
 
   it('activate console logger', () => {
@@ -44,9 +40,9 @@ describe('instrumentation/index', () => {
     const delegateProvider = proxyProvider.getDelegate();
     expect(delegateProvider).toBeInstanceOf(NodeTracerProvider);
     const nodeProvider = delegateProvider as NodeTracerProvider;
-    const provider = nodeProvider.getActiveSpanProcessor();
-    expect(provider).toBeInstanceOf(MultiSpanProcessor);
-    expect(provider).toMatchSnapshot();
+    expect(nodeProvider).toMatchObject({
+      _registeredSpanProcessors: [{ _exporter: {} }],
+    });
   });
 
   it('activate remote logger', () => {
@@ -59,9 +55,23 @@ describe('instrumentation/index', () => {
     const delegateProvider = proxyProvider.getDelegate();
     expect(delegateProvider).toBeInstanceOf(NodeTracerProvider);
     const nodeProvider = delegateProvider as NodeTracerProvider;
-    const provider = nodeProvider.getActiveSpanProcessor();
-    expect(provider).toBeInstanceOf(MultiSpanProcessor);
-    expect(provider).toMatchSnapshot();
+    expect(nodeProvider).toMatchObject({
+      _registeredSpanProcessors: [
+        {
+          _exporter: {
+            _delegate: {
+              _transport: {
+                _transport: {
+                  _parameters: {
+                    url: 'https://collector.example.com/v1/traces',
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
+    });
   });
 
   it('activate console logger and remote logger', () => {
@@ -75,9 +85,24 @@ describe('instrumentation/index', () => {
     const delegateProvider = proxyProvider.getDelegate();
     expect(delegateProvider).toBeInstanceOf(NodeTracerProvider);
     const nodeProvider = delegateProvider as NodeTracerProvider;
-    const provider = nodeProvider.getActiveSpanProcessor();
-    expect(provider).toBeInstanceOf(MultiSpanProcessor);
-    expect(provider).toMatchSnapshot();
+    expect(nodeProvider).toMatchObject({
+      _registeredSpanProcessors: [
+        { _exporter: {} },
+        {
+          _exporter: {
+            _delegate: {
+              _transport: {
+                _transport: {
+                  _parameters: {
+                    url: 'https://collector.example.com/v1/traces',
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
+    });
   });
 
   describe('instrument', () => {
@@ -94,7 +119,7 @@ describe('instrumentation/index', () => {
       expect(() =>
         instrument('test', () => {
           throw error;
-        })
+        }),
       ).toThrow(error);
     });
 
@@ -114,7 +139,7 @@ describe('instrumentation/index', () => {
         instrument('test', async () => {
           await Promise.resolve();
           throw error;
-        })
+        }),
       ).rejects.toThrow(error);
     });
   });

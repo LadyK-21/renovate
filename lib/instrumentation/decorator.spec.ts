@@ -1,4 +1,3 @@
-import { afterAll } from '@jest/globals';
 import { instrument } from './decorator';
 import { disableInstrumentations } from '.';
 
@@ -6,10 +5,6 @@ afterAll(disableInstrumentations);
 
 describe('instrumentation/decorator', () => {
   const spy = jest.fn(() => Promise.resolve());
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
 
   it('should instrument async function', async () => {
     class MyClass {

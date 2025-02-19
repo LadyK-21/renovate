@@ -1,19 +1,18 @@
-import { Buffer } from 'buffer';
-import {
+import { Buffer } from 'node:buffer';
+import type {
   GetCommentsForPullRequestOutput,
   ListRepositoriesOutput,
-  PullRequestStatusEnum,
 } from '@aws-sdk/client-codecommit';
-import type { Credentials } from '@aws-sdk/types';
-import JSON5 from 'json5';
-
+import { PullRequestStatusEnum } from '@aws-sdk/client-codecommit';
 import {
   PLATFORM_BAD_CREDENTIALS,
   REPOSITORY_EMPTY,
   REPOSITORY_NOT_FOUND,
 } from '../../../constants/error-messages';
 import { logger } from '../../../logger';
-import { BranchStatus, PrState, VulnerabilityAlert } from '../../../types';
+import type { BranchStatus, PrState } from '../../../types';
+import { coerceArray } from '../../../util/array';
+import { parseJson } from '../../../util/common';
 import * as git from '../../../util/git';
 import { regEx } from '../../../util/regex';
 import { sanitize } from '../../../util/sanitize';
@@ -36,12 +35,12 @@ import type {
 } from '../types';
 import { getNewBranchName, repoFingerprint } from '../util';
 import { smartTruncate } from '../utils/pr-body';
-import { getCodeCommitUrl } from './codecommit-client';
 import * as client from './codecommit-client';
-import { getUserArn, initIamClient } from './iam-client';
 
 export interface CodeCommitPr extends Pr {
   body: string;
+  destinationCommit: string;
+  sourceCommit: string;
 }
 
 interface Config {
@@ -49,9 +48,9 @@ interface Config {
   defaultBranch?: string;
   region?: string;
   prList?: CodeCommitPr[];
-  credentials?: Credentials;
-  userArn?: string;
 }
+
+export const id = 'codecommit';
 
 export const config: Config = {};
 
@@ -61,52 +60,42 @@ export async function initPlatform({
   password,
   token: awsToken,
 }: PlatformParams): Promise<PlatformResult> {
-  let accessKeyId = username;
-  let secretAccessKey = password;
+  const accessKeyId = username;
+  const secretAccessKey = password;
   let region: string | undefined;
 
-  if (!accessKeyId) {
-    accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+  if (accessKeyId) {
+    process.env.AWS_ACCESS_KEY_ID = accessKeyId;
   }
-  if (!secretAccessKey) {
-    secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+  if (secretAccessKey) {
+    process.env.AWS_SECRET_ACCESS_KEY = secretAccessKey;
+  }
+  if (awsToken) {
+    process.env.AWS_SESSION_TOKEN = awsToken;
   }
 
   if (endpoint) {
     const regionReg = regEx(/.*codecommit\.(?<region>.+)\.amazonaws\.com/);
     const codeCommitMatch = regionReg.exec(endpoint);
     region = codeCommitMatch?.groups?.region;
-    if (!region) {
+    if (region) {
+      process.env.AWS_REGION = region;
+    } else {
       logger.warn("Can't parse region, make sure your endpoint is correct");
     }
-  } else {
-    region = process.env.AWS_REGION;
   }
-
-  if (!accessKeyId || !secretAccessKey || !region) {
-    throw new Error(
-      'Init: You must configure a AWS user(accessKeyId), password(secretAccessKey) and endpoint/AWS_REGION'
-    );
-  }
-
-  config.region = region;
-  const credentials: Credentials = {
-    accessKeyId,
-    secretAccessKey,
-    sessionToken: awsToken ?? process.env.AWS_SESSION_TOKEN,
-  };
-  config.credentials = credentials;
 
   // If any of the below fails, it will throw an exception stopping the program.
-  client.buildCodeCommitClient(region, credentials);
-  // To check if we have permission to codecommit
+  client.buildCodeCommitClient();
+  // To check if we have permission to codecommit, throws exception if failed.
   await client.listRepositories();
 
-  initIamClient(region, credentials);
-  config.userArn = await getUserArn();
-
   const platformConfig: PlatformResult = {
-    endpoint: endpoint ?? `https://git-codecommit.${region}.amazonaws.com/`,
+    endpoint:
+      endpoint ??
+      `https://git-codecommit.${
+        process.env.AWS_REGION ?? 'us-east-1'
+      }.amazonaws.com/`,
   };
   return Promise.resolve(platformConfig);
 }
@@ -127,7 +116,14 @@ export async function initRepo({
     throw new Error(REPOSITORY_NOT_FOUND);
   }
 
-  const url = getCodeCommitUrl(config.region!, repository, config.credentials!);
+  if (!repo?.repositoryMetadata) {
+    logger.error({ repository }, 'Could not find repository');
+    throw new Error(REPOSITORY_NOT_FOUND);
+  }
+  logger.debug({ repositoryDetails: repo }, 'Repository details');
+  const metadata = repo.repositoryMetadata;
+
+  const url = client.getCodeCommitUrl(metadata, repository);
   try {
     await git.initRepo({
       url,
@@ -136,14 +132,6 @@ export async function initRepo({
     logger.debug({ err }, 'Failed to git init');
     throw new Error(PLATFORM_BAD_CREDENTIALS);
   }
-
-  if (!repo?.repositoryMetadata) {
-    logger.error({ repository }, 'Could not find repository');
-    throw new Error(REPOSITORY_NOT_FOUND);
-  }
-
-  logger.debug({ repositoryDetails: repo }, 'Repository details');
-  const metadata = repo.repositoryMetadata;
 
   if (!metadata.defaultBranch || !metadata.repositoryId) {
     logger.debug('Repo is empty');
@@ -168,17 +156,14 @@ export async function getPrList(): Promise<CodeCommitPr[]> {
     return config.prList;
   }
 
-  const listPrsResponse = await client.listPullRequests(
-    config.repository!,
-    config.userArn!
-  );
+  const listPrsResponse = await client.listPullRequests(config.repository!);
   const fetchedPrs: CodeCommitPr[] = [];
 
   if (listPrsResponse && !listPrsResponse.pullRequestIds) {
     return fetchedPrs;
   }
 
-  const prIds = listPrsResponse.pullRequestIds ?? [];
+  const prIds = coerceArray(listPrsResponse.pullRequestIds);
 
   for (const prId of prIds) {
     const prRes = await client.getPr(prId);
@@ -190,10 +175,12 @@ export async function getPrList(): Promise<CodeCommitPr[]> {
     const pr: CodeCommitPr = {
       targetBranch: prInfo.pullRequestTargets![0].destinationReference!,
       sourceBranch: prInfo.pullRequestTargets![0].sourceReference!,
+      destinationCommit: prInfo.pullRequestTargets![0].destinationCommit!,
+      sourceCommit: prInfo.pullRequestTargets![0].sourceCommit!,
       state:
         prInfo.pullRequestStatus === PullRequestStatusEnum.OPEN
-          ? PrState.Open
-          : PrState.Closed,
+          ? 'open'
+          : 'closed',
       number: Number.parseInt(prId),
       title: prInfo.title!,
       body: prInfo.description!,
@@ -203,35 +190,37 @@ export async function getPrList(): Promise<CodeCommitPr[]> {
 
   config.prList = fetchedPrs;
 
-  logger.debug({ length: fetchedPrs.length }, 'Retrieved Pull Requests');
+  logger.debug(`Retrieved Pull Requests, count: ${fetchedPrs.length}`);
   return fetchedPrs;
 }
 
 export async function findPr({
   branchName,
   prTitle,
-  state = PrState.All,
+  state = 'all',
 }: FindPRConfig): Promise<CodeCommitPr | null> {
   let prsFiltered: CodeCommitPr[] = [];
   try {
     const prs = await getPrList();
     const refsHeadBranchName = getNewBranchName(branchName);
     prsFiltered = prs.filter(
-      (item) => item.sourceBranch === refsHeadBranchName
+      (item) => item.sourceBranch === refsHeadBranchName,
     );
 
     if (prTitle) {
-      prsFiltered = prsFiltered.filter((item) => item.title === prTitle);
+      prsFiltered = prsFiltered.filter(
+        (item) => item.title.toUpperCase() === prTitle.toUpperCase(),
+      );
     }
 
     switch (state) {
-      case PrState.All:
+      case 'all':
         break;
-      case PrState.NotOpen:
-        prsFiltered = prsFiltered.filter((item) => item.state !== PrState.Open);
+      case '!open':
+        prsFiltered = prsFiltered.filter((item) => item.state !== 'open');
         break;
       default:
-        prsFiltered = prsFiltered.filter((item) => item.state === PrState.Open);
+        prsFiltered = prsFiltered.filter((item) => item.state === 'open');
         break;
     }
   } catch (err) {
@@ -244,18 +233,18 @@ export async function findPr({
 }
 
 export async function getBranchPr(
-  branchName: string
+  branchName: string,
 ): Promise<CodeCommitPr | null> {
   logger.debug(`getBranchPr(${branchName})`);
   const existingPr = await findPr({
     branchName,
-    state: PrState.Open,
+    state: 'open',
   });
   return existingPr ? getPr(existingPr.number) : null;
 }
 
 export async function getPr(
-  pullRequestId: number
+  pullRequestId: number,
 ): Promise<CodeCommitPr | null> {
   logger.debug(`getPr(${pullRequestId})`);
   const prRes = await client.getPr(`${pullRequestId}`);
@@ -267,21 +256,22 @@ export async function getPr(
   const prInfo = prRes.pullRequest;
   let prState: PrState;
   if (prInfo.pullRequestTargets![0].mergeMetadata?.isMerged) {
-    prState = PrState.Merged;
+    prState = 'merged';
   } else {
     prState =
       prInfo.pullRequestStatus === PullRequestStatusEnum.OPEN
-        ? PrState.Open
-        : PrState.Closed;
+        ? 'open'
+        : 'closed';
   }
 
   return {
     sourceBranch: prInfo.pullRequestTargets![0].sourceReference!,
+    sourceCommit: prInfo.pullRequestTargets![0].sourceCommit!,
     state: prState,
     number: pullRequestId,
     title: prInfo.title!,
     targetBranch: prInfo.pullRequestTargets![0].destinationReference!,
-    sha: prInfo.revisionId,
+    destinationCommit: prInfo.pullRequestTargets![0].destinationCommit!,
     body: prInfo.description!,
   };
 }
@@ -300,7 +290,7 @@ export async function getRepos(): Promise<string[]> {
 
   const res: string[] = [];
 
-  const repoNames = reposRes?.repositories ?? [];
+  const repoNames = coerceArray(reposRes?.repositories);
 
   for (const repo of repoNames) {
     if (repo.repositoryName) {
@@ -316,7 +306,11 @@ export function massageMarkdown(input: string): string {
   return input
     .replace(
       'you tick the rebase/retry checkbox',
-      'rename PR to start with "rebase!"'
+      'PR is renamed to start with "rebase!"',
+    )
+    .replace(
+      'checking the rebase/retry box above',
+      'renaming the PR to start with "rebase!"',
     )
     .replace(regEx(/<\/?summary>/g), '**')
     .replace(regEx(/<\/?details>/g), '')
@@ -324,39 +318,41 @@ export function massageMarkdown(input: string): string {
     .replace(regEx(/\]\(\.\.\/pull\//g), '](../../pull-requests/')
     .replace(
       regEx(/(?<hiddenComment><!--renovate-(?:debug|config-hash):.*?-->)/g),
-      '[//]: # ($<hiddenComment>)'
+      '[//]: # ($<hiddenComment>)',
     );
+}
+
+/**
+ * Unsed, no Dashboard
+ */
+export function maxBodyLength(): number {
+  return Infinity;
 }
 
 export async function getJsonFile(
   fileName: string,
   repoName?: string,
-  branchOrTag?: string
-): Promise<any | null> {
+  branchOrTag?: string,
+): Promise<any> {
   const raw = await getRawFile(fileName, repoName, branchOrTag);
-  return raw ? JSON5.parse(raw) : null;
+  return parseJson(raw, fileName);
 }
 
 export async function getRawFile(
   fileName: string,
   repoName?: string,
-  branchOrTag?: string
+  branchOrTag?: string,
 ): Promise<string | null> {
   const fileRes = await client.getFile(
     repoName ?? config.repository,
     fileName,
-    branchOrTag
+    branchOrTag,
   );
   if (!fileRes?.fileContent) {
     return null;
   }
   const buf = Buffer.from(fileRes.fileContent);
   return buf.toString();
-}
-
-/* istanbul ignore next */
-export function getRepoForceRebase(): Promise<boolean> {
-  return Promise.resolve(false);
 }
 
 const AMAZON_MAX_BODY_LENGTH = 10239;
@@ -374,23 +370,27 @@ export async function createPr({
     sanitize(description),
     sourceBranch,
     targetBranch,
-    config.repository
+    config.repository,
   );
 
   if (
     !prCreateRes.pullRequest?.title ||
     !prCreateRes.pullRequest?.pullRequestId ||
-    !prCreateRes.pullRequest?.description
+    !prCreateRes.pullRequest?.description ||
+    !prCreateRes.pullRequest?.pullRequestTargets?.length
   ) {
     throw new Error('Could not create pr, missing PR info');
   }
 
   return {
     number: Number.parseInt(prCreateRes.pullRequest.pullRequestId),
-    state: PrState.Open,
+    state: 'open',
     title: prCreateRes.pullRequest.title,
     sourceBranch,
     targetBranch,
+    sourceCommit: prCreateRes.pullRequest.pullRequestTargets[0].sourceCommit!,
+    destinationCommit:
+      prCreateRes.pullRequest.pullRequestTargets[0].destinationCommit!,
     sourceRepo: config.repository,
     body: prCreateRes.pullRequest.description,
   };
@@ -415,7 +415,7 @@ export async function updatePr({
   if (body && cachedPr?.body !== body) {
     await client.updatePrDescription(
       `${prNo}`,
-      smartTruncate(sanitize(body), AMAZON_MAX_BODY_LENGTH)
+      smartTruncate(sanitize(body), AMAZON_MAX_BODY_LENGTH),
     );
   }
 
@@ -424,13 +424,13 @@ export async function updatePr({
   }
 
   const prStatusInput =
-    state === PrState.Closed
+    state === 'closed'
       ? PullRequestStatusEnum.CLOSED
       : PullRequestStatusEnum.OPEN;
   if (cachedPr?.state !== prStatusInput) {
     try {
       await client.updatePrStatus(`${prNo}`, prStatusInput);
-    } catch (err) {
+    } catch {
       // safety check
       // do nothing, it's ok to fail sometimes when trying to update from open to open or from closed to closed.
     }
@@ -517,15 +517,15 @@ export async function mergePr({
 
 export async function addReviewers(
   prNo: number,
-  reviewers: string[]
+  reviewers: string[],
 ): Promise<void> {
   const numberOfApprovers = reviewers.length;
   const approvalRuleContents = `{"Version":"2018-11-08","Statements": [{"Type": "Approvers","NumberOfApprovalsNeeded":${numberOfApprovers},"ApprovalPoolMembers": ${JSON.stringify(
-    reviewers
+    reviewers,
   )}}]}`;
   const res = await client.createPrApprovalRule(
     `${prNo}`,
-    approvalRuleContents
+    approvalRuleContents,
   );
   if (res) {
     const approvalRule = res.approvalRule;
@@ -570,29 +570,24 @@ export function deleteLabel(prNumber: number, label: string): Promise<void> {
   return Promise.resolve();
 }
 
-/* istanbul ignore next */
-export function getVulnerabilityAlerts(): Promise<VulnerabilityAlert[]> {
-  return Promise.resolve([]);
-}
-
 // Returns the combined status for a branch.
 /* istanbul ignore next */
 export function getBranchStatus(branchName: string): Promise<BranchStatus> {
   logger.debug(`getBranchStatus(${branchName})`);
   logger.debug(
-    'returning branch status yellow, because getBranchStatus isnt supported on aws yet'
+    'returning branch status yellow, because getBranchStatus isnt supported on aws yet',
   );
-  return Promise.resolve(BranchStatus.yellow);
+  return Promise.resolve('yellow');
 }
 
 /* istanbul ignore next */
 export function getBranchStatusCheck(
   branchName: string,
-  context: string
+  context: string,
 ): Promise<BranchStatus | null> {
   logger.debug(`getBranchStatusCheck(${branchName}, context=${context})`);
   logger.debug(
-    'returning null, because getBranchStatusCheck is not supported on aws yet'
+    'returning null, because getBranchStatusCheck is not supported on aws yet',
   );
   return Promise.resolve(null);
 }
@@ -618,10 +613,7 @@ export async function ensureComment({
   const body = `${header}${sanitize(content)}`;
   let prCommentsResponse: GetCommentsForPullRequestOutput;
   try {
-    prCommentsResponse = await client.getPrComments(
-      config.repository!,
-      `${number}`
-    );
+    prCommentsResponse = await client.getPrComments(`${number}`);
   } catch (err) {
     logger.debug({ err }, 'Unable to retrieve pr comments');
     return false;
@@ -640,7 +632,7 @@ export async function ensureComment({
     }
     const firstCommentContent = commentObj.comments[0].content;
     if (
-      (topic && firstCommentContent?.startsWith(header)) ||
+      (topic && firstCommentContent?.startsWith(header)) === true ||
       (!topic && firstCommentContent === body)
     ) {
       commentId = commentObj.comments[0].commentId;
@@ -650,17 +642,10 @@ export async function ensureComment({
   }
 
   if (!commentId) {
-    const prEvent = await client.getPrEvents(`${number}`);
+    const prs = await getPrList();
+    const thisPr = prs.filter((item) => item.number === number);
 
-    if (!prEvent?.pullRequestEvents) {
-      return false;
-    }
-
-    const event =
-      prEvent.pullRequestEvents[0]
-        .pullRequestSourceReferenceUpdatedEventMetadata;
-
-    if (!event?.beforeCommitId || !event?.afterCommitId) {
+    if (!thisPr[0].sourceCommit || !thisPr[0].destinationCommit) {
       return false;
     }
 
@@ -668,24 +653,24 @@ export async function ensureComment({
       `${number}`,
       config.repository,
       body,
-      event.beforeCommitId,
-      event.afterCommitId
+      thisPr[0].destinationCommit,
+      thisPr[0].sourceCommit,
     );
     logger.info(
       { repository: config.repository, prNo: number, topic },
-      'Comment added'
+      'Comment added',
     );
   } else if (commentNeedsUpdating && commentId) {
     await client.updateComment(commentId, body);
 
     logger.debug(
       { repository: config.repository, prNo: number, topic },
-      'Comment updated'
+      'Comment updated',
     );
   } else {
     logger.debug(
       { repository: config.repository, prNo: number, topic },
-      'Comment is already update-to-date'
+      'Comment is already update-to-date',
     );
   }
 
@@ -693,7 +678,7 @@ export async function ensureComment({
 }
 
 export async function ensureCommentRemoval(
-  removeConfig: EnsureCommentRemovalConfig
+  removeConfig: EnsureCommentRemovalConfig,
 ): Promise<void> {
   const { number: prNo } = removeConfig;
   const key =
@@ -704,10 +689,7 @@ export async function ensureCommentRemoval(
 
   let prCommentsResponse: GetCommentsForPullRequestOutput;
   try {
-    prCommentsResponse = await client.getPrComments(
-      config.repository!,
-      `${prNo}`
-    );
+    prCommentsResponse = await client.getPrComments(`${prNo}`);
   } catch (err) {
     logger.debug({ err }, 'Unable to retrieve pr comments');
     return;
@@ -722,7 +704,7 @@ export async function ensureCommentRemoval(
   for (const commentObj of prCommentsResponse.commentsForPullRequestData) {
     if (!commentObj?.comments) {
       logger.debug(
-        'comments object not found under commentsForPullRequestData'
+        'comments object not found under commentsForPullRequestData',
       );
       continue;
     }
@@ -730,7 +712,8 @@ export async function ensureCommentRemoval(
     for (const comment of commentObj.comments) {
       if (
         (removeConfig.type === 'by-topic' &&
-          comment.content?.startsWith(`### ${removeConfig.topic}\n\n`)) ||
+          comment.content?.startsWith(`### ${removeConfig.topic}\n\n`)) ===
+          true ||
         (removeConfig.type === 'by-content' &&
           removeConfig.content === comment.content?.trim())
       ) {

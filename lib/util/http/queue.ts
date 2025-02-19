@@ -1,7 +1,7 @@
 import PQueue from 'p-queue';
 import { logger } from '../../logger';
 import { parseUrl } from '../url';
-import { getConcurrentRequestsLimit } from './host-rules';
+import { getConcurrentRequestsLimit } from './rate-limits';
 
 const hostQueues = new Map<string, PQueue | null>();
 
@@ -9,7 +9,7 @@ export function getQueue(url: string): PQueue | null {
   const host = parseUrl(url)?.host;
   if (!host) {
     // should never happen
-    logger.debug({ url }, 'No host');
+    logger.debug(`No host on ${url}`);
     return null;
   }
 
